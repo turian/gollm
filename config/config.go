@@ -54,6 +54,7 @@ type Config struct {
 	Provider              string            `env:"LLM_PROVIDER" envDefault:"anthropic" validate:"required"`
 	Model                 string            `env:"LLM_MODEL" envDefault:"claude-3-5-haiku-latest" validate:"required"`
 	OllamaEndpoint        string            `env:"OLLAMA_ENDPOINT" envDefault:"http://localhost:11434"`
+	VLLMEndpoint          string            `env:"VLLM_ENDPOINT" envDefault:"http://localhost:8000"`
 	Temperature           float64           `env:"LLM_TEMPERATURE" envDefault:"0.7" validate:"gte=0,lte=1"`
 	MaxTokens             int               `env:"LLM_MAX_TOKENS" envDefault:"100"`
 	TopP                  float64           `env:"LLM_TOP_P" envDefault:"0.9" validate:"gte=0,lte=1"`
@@ -78,6 +79,8 @@ type Config struct {
 	EnableCaching         bool `env:"LLM_ENABLE_CACHING" envDefault:"false"`
 	EnableStreaming       bool `env:"LLM_ENABLE_STREAMING" envDefault:"false"`
 	MemoryOption          *MemoryOption
+	CustomValidator       func(interface{}) error // Custom validation function to override default validation
+	Logger                utils.Logger            // Custom logger, if nil uses default
 }
 
 // LoadConfig creates a new Config instance, loading values from environment
@@ -182,6 +185,13 @@ func SetModel(model string) ConfigOption {
 func SetOllamaEndpoint(endpoint string) ConfigOption {
 	return func(c *Config) {
 		c.OllamaEndpoint = endpoint
+	}
+}
+
+// SetVLLMEndpoint sets the vLLM API endpoint.
+func SetVLLMEndpoint(endpoint string) ConfigOption {
+	return func(c *Config) {
+		c.VLLMEndpoint = endpoint
 	}
 }
 
@@ -348,6 +358,54 @@ func SetMirostatTau(tau float64) ConfigOption {
 func SetTfsZ(z float64) ConfigOption {
 	return func(c *Config) {
 		c.TfsZ = &z
+	}
+}
+
+// SetCustomValidator sets a custom validation function that overrides the default validation behavior.
+// This is particularly useful for bypassing API key validation for specific providers like Google/Gemini
+// or implementing custom validation logic.
+//
+// The custom validator is scoped to the NewLLM call and does not affect other goroutines,
+// making it safe for concurrent use.
+//
+// Parameters:
+//   - fn: A custom validation function that takes an interface{} and returns an error.
+//     If fn is nil, default validation is used.
+//
+// Example usage:
+//
+//	// Skip all validation (useful for Google/Gemini)
+//	llm, err := gollm.NewLLM(
+//	    gollm.SetProvider("google"),
+//	    gollm.SetModel("gemini-1.5-pro-latest"),
+//	    gollm.SetAPIKey(os.Getenv("GEMINI_API_KEY")),
+//	    gollm.SetCustomValidator(func(v interface{}) error {
+//	        return nil // Skip all validation
+//	    }),
+//	)
+//
+//	// Or implement provider-specific logic with fallback to default validation
+//	llm, err := gollm.NewLLM(
+//	    gollm.SetProvider("google"),
+//	    gollm.SetCustomValidator(func(v interface{}) error {
+//	        if config, ok := v.(*gollm.Config); ok && config.Provider == "google" {
+//	            return nil // Skip validation for Google
+//	        }
+//	        return gollm.DefaultValidate(v) // Use default for others
+//	    }),
+//	)
+func SetCustomValidator(fn func(interface{}) error) ConfigOption {
+	return func(c *Config) {
+		c.CustomValidator = fn
+	}
+}
+
+// SetLogger sets a custom logger implementation.
+// If not set, a default logger writing to stderr is used.
+// Pass nil to disable logging entirely.
+func SetLogger(logger utils.Logger) ConfigOption {
+	return func(c *Config) {
+		c.Logger = logger
 	}
 }
 

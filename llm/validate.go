@@ -16,6 +16,18 @@ import (
 // validate is the shared validator instance used across the package.
 var validate *validator.Validate
 
+// ValidatorFunc is the signature for custom validation functions.
+// Custom validators receive the value to validate and return an error if validation fails.
+// Use gollm.DefaultValidate within custom validators to fall back to standard validation.
+type ValidatorFunc func(interface{}) error
+
+// DefaultValidate performs the standard struct validation using the go-playground/validator.
+// This is the canonical validation function that all other validation methods delegate to.
+// Custom validators can call this to fall back to default validation behavior.
+func DefaultValidate(v interface{}) error {
+	return validate.Struct(v)
+}
+
 func init() {
 	validate = validator.New()
 
@@ -38,15 +50,26 @@ func validateAPIKey(fl validator.FieldLevel) bool {
 	parent := fl.Parent()
 	provider := parent.FieldByName("Provider").String()
 
-	// For Ollama, we don't require an API key
-	if provider == "ollama" {
-		// For Ollama, check if the endpoint is accessible
+	// For local LLM servers, we don't require an API key.
+	// Just check if the endpoint is accessible (or return true for vLLM).
+	switch provider {
+	case "vllm":
+		// vLLM uses OpenAI-compatible API without authentication
+		return true
+	case "ollama":
 		endpoint := parent.FieldByName("OllamaEndpoint").String()
 		if endpoint == "" {
-			endpoint = "http://localhost:11434" // default endpoint
+			endpoint = "http://localhost:11434"
 		}
-		// Try to make a HEAD request to the Ollama endpoint
 		resp, err := http.Head(endpoint + "/api/tags")
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	case "lmstudio":
+		// LM Studio uses OpenAI-compatible API at localhost:1234
+		resp, err := http.Get("http://localhost:1234/v1/models")
 		if err != nil {
 			return false
 		}
@@ -72,7 +95,7 @@ func validateAPIKey(fl validator.FieldLevel) bool {
 }
 
 // Validate checks if the given struct is valid according to its validation rules.
-// It uses the go-playground/validator package to perform validation based on struct tags.
+// It delegates to DefaultValidate to maintain a single code path for validation.
 //
 // Parameters:
 //   - s: The struct to validate. Must be a pointer to a struct.
@@ -92,7 +115,33 @@ func validateAPIKey(fl validator.FieldLevel) bool {
 //	    log.Fatal(err)
 //	}
 func Validate(s interface{}) error {
-	return validate.Struct(s)
+	return DefaultValidate(s)
+}
+
+// ValidateWithCustomValidator checks if the given struct is valid, using a custom validator if provided.
+// This allows for scoped custom validation without affecting other goroutines.
+//
+// Parameters:
+//   - s: The struct to validate. Must be a pointer to a struct.
+//   - customValidator: Optional ValidatorFunc. If nil, uses default validation.
+//
+// Returns:
+//   - error: nil if validation passes, otherwise returns validation errors
+//
+// Example:
+//
+//	// Skip validation for Google/Gemini provider
+//	err := gollm.ValidateWithCustomValidator(cfg, func(v interface{}) error {
+//	    if config, ok := v.(*gollm.Config); ok && config.Provider == "google" {
+//	        return nil // Skip validation for Google
+//	    }
+//	    return gollm.DefaultValidate(v) // Use default for others
+//	})
+func ValidateWithCustomValidator(s interface{}, customValidator ValidatorFunc) error {
+	if customValidator != nil {
+		return customValidator(s)
+	}
+	return DefaultValidate(s)
 }
 
 // RegisterCustomValidation registers a custom validation function with the validator.
